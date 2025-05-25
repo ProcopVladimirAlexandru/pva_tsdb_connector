@@ -1,8 +1,15 @@
 from typing import Mapping
 
-from pva_tsdb_connector.models import NewTSMetadataModel, TSMetadataModel, TSDataModel, \
-    NewTagModel, TagModel, \
-    TSToTagModel, MetricModel, TSToMetricModel
+from pva_tsdb_connector.models import (
+    NewTSMetadataModel,
+    TSMetadataModel,
+    TSDataModel,
+    NewTagModel,
+    TagModel,
+    TSToTagModel,
+    MetricModel,
+    TSToMetricModel,
+)
 from pva_tsdb_connector.enums import TSStatusCodesEnum
 from pva_tsdb_connector.postgres_connector.configs import NamingSettings
 
@@ -25,7 +32,9 @@ class Mapper(object):
         )
 
     @staticmethod
-    def ts_metadata_model_to_db_dict(model: NewTSMetadataModel, names: NamingSettings) -> dict:
+    def ts_metadata_model_to_db_dict(
+        model: NewTSMetadataModel, names: NamingSettings
+    ) -> dict:
         ret = {
             names.meta_ts_name_col: model.name,
             names.meta_ts_description_col: model.description,
@@ -38,7 +47,7 @@ class Mapper(object):
             names.meta_ts_uid_from_source_col: model.uid_from_source,
             names.meta_ts_consecutive_failed_updates_col: model.consecutive_failed_updates,
             names.meta_ts_status_code_col: model.status_code,
-            names.meta_ts_unit_col: model.unit
+            names.meta_ts_unit_col: model.unit,
         }
         if isinstance(model, TSMetadataModel):
             ret[names.meta_ts_uid_col] = model.uid
@@ -52,14 +61,16 @@ class Mapper(object):
             description=d[names.meta_ts_description_col],
             last_time=d[names.meta_ts_last_time_col],
             last_update_time=d[names.meta_ts_last_update_time_col],
-            successful_last_update_time=d[names.meta_ts_successful_last_update_time_col],
+            successful_last_update_time=d[
+                names.meta_ts_successful_last_update_time_col
+            ],
             next_update_time=d[names.meta_ts_next_update_time_col],
             update_frequency=d[names.meta_ts_update_frequency_col],
             source_uid=d[names.meta_ts_source_uid_col],
             uid_from_source=d[names.meta_ts_uid_from_source_col],
             consecutive_failed_updates=d[names.meta_ts_consecutive_failed_updates_col],
             status_code=TSStatusCodesEnum(d[names.meta_ts_status_code_col]),
-            unit=d[names.meta_ts_unit_col]
+            unit=d[names.meta_ts_unit_col],
         )
 
     @staticmethod
@@ -72,8 +83,7 @@ class Mapper(object):
     @staticmethod
     def db_row_to_ts_to_tag_model(d: Mapping, names: NamingSettings) -> TSToTagModel:
         return TSToTagModel(
-            ts_uid=d[names.ts_to_tag_ts_uid_col],
-            tag_uid=d[names.ts_to_tag_tag_uid_col]
+            ts_uid=d[names.ts_to_tag_ts_uid_col], tag_uid=d[names.ts_to_tag_tag_uid_col]
         )
 
     @staticmethod
@@ -123,7 +133,9 @@ class Mapper(object):
         }
 
     @staticmethod
-    def db_row_to_ts_to_metric_model(d: Mapping, names: NamingSettings, max_abs: float | None) -> TSToMetricModel:
+    def db_row_to_ts_to_metric_model(
+        d: Mapping, names: NamingSettings, max_abs: float | None
+    ) -> TSToMetricModel:
         if max_abs <= 0:
             raise ValueError("max_abs must be a positive number")
         value: float = d[names.ts_to_metric_value_col]
@@ -138,7 +150,9 @@ class Mapper(object):
         )
 
     @staticmethod
-    def ts_to_metric_model_to_db_dict(model: TSToMetricModel, names: NamingSettings) -> dict:
+    def ts_to_metric_model_to_db_dict(
+        model: TSToMetricModel, names: NamingSettings
+    ) -> dict:
         return {
             names.ts_to_metric_ts_uid_col: model.ts_uid,
             names.ts_to_metric_metric_uid_col: model.metric_uid,

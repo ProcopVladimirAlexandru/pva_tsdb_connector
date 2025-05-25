@@ -7,7 +7,7 @@ class MetricCategories(StrEnum):
 
 
 class MetricUnits(StrEnum):
-    PROPORTION: str = 'proportion'
+    PROPORTION: str = "proportion"
     SECONDS: str = "seconds"
 
 

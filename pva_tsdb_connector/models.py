@@ -7,16 +7,30 @@ from pva_tsdb_connector.enums import TSStatusCodesEnum, MetricDefaultOrders
 class NewTSMetadataModel(BaseModel):
     name: str = Field(title="Timeseries Name")
     description: str | None = Field(default=None, title="Timeseries Description")
-    last_time: datetime.datetime | None = Field(default=None, title="Timeseries Last Datetime")
+    last_time: datetime.datetime | None = Field(
+        default=None, title="Timeseries Last Datetime"
+    )
     last_update_time: datetime.datetime = Field(title="Timeseries Last Update Datetime")
-    successful_last_update_time: datetime.datetime = Field(title="Timeseries Successful Last Update Datetime",
-                                                           description="Updated on complete success: meta, datapoints, tags and metrics")
-    next_update_time: datetime.datetime | None = Field(default=None, title="Timeseries Next Update Datetime")
-    update_frequency: int = Field(default=24*60*60, title="Timeseries Expected Update Frequency (s)", gt=60*60)
+    successful_last_update_time: datetime.datetime = Field(
+        title="Timeseries Successful Last Update Datetime",
+        description="Updated on complete success: meta, datapoints, tags and metrics",
+    )
+    next_update_time: datetime.datetime | None = Field(
+        default=None, title="Timeseries Next Update Datetime"
+    )
+    update_frequency: int = Field(
+        default=24 * 60 * 60,
+        title="Timeseries Expected Update Frequency (s)",
+        gt=60 * 60,
+    )
     source_uid: str = Field(title="UID String to Identify Timeseries' Source")
     uid_from_source: str = Field(title="Timeseries String UID within the Source")
-    consecutive_failed_updates: int = Field(default=0, title="Timeseries Counter for Consecutive Failed Updates", ge=0)
-    status_code: TSStatusCodesEnum = Field(default=TSStatusCodesEnum.SUCCESS, title="Internal Update Status Code")
+    consecutive_failed_updates: int = Field(
+        default=0, title="Timeseries Counter for Consecutive Failed Updates", ge=0
+    )
+    status_code: TSStatusCodesEnum = Field(
+        default=TSStatusCodesEnum.SUCCESS, title="Internal Update Status Code"
+    )
     unit: str | None = Field(default=None, title="TS Unit")
 
     def get_log_name(self) -> str:
@@ -64,11 +78,13 @@ class MetricModel(BaseModel):
     description: str = Field(title="Metric Description")
     category: str = Field(title="Metric Name")
     unit: str = Field(title="Metric Unit")
-    default_order: str = Field(title="Metric Default Order", default=MetricDefaultOrders.DESC)
+    default_order: str = Field(
+        title="Metric Default Order", default=MetricDefaultOrders.DESC
+    )
 
 
 class TSToMetricJSONModel(BaseModel):
-    model_config = ConfigDict(extra='allow')
+    model_config = ConfigDict(extra="allow")
 
 
 class TSToMetricModel(BaseModel):
