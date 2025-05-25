@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "pva_tsdb_connector"
+version = "1.0.0"
+authors = [
+  { name="Procop Vladimir-Alexandru", email="vladiprocop@yahoo.com" },
+]
+description = "A package to gather synchronous and asynchronous Python connectors to the Chartop DB."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic >= 2.11.4",
+    "pydantic-settings >= 2.9.1",
+    "SQLAlchemy >= 2.0.41",
+    "asyncpg >= 0.30.0",
+    "structlog >= 25.3.0"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache 2.0 License",
+    "Operating System :: OS Independent",
+]
