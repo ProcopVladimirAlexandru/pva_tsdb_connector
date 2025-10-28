@@ -1,5 +1,6 @@
 import structlog
 import datetime
+from typing import Any
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 from sqlalchemy import (
     URL,
@@ -18,9 +19,12 @@ from sqlalchemy import (
     Index,
     select,
     func,
+    text,
 )
 from sqlalchemy import delete, update, distinct, and_
-from sqlalchemy.dialects.postgresql import insert, JSONB
+from sqlalchemy.dialects.postgresql import insert, JSONB, aggregate_order_by
+from pgvector.sqlalchemy import Vector  # type: ignore
+from sqlalchemy.ext.asyncio.engine import AsyncEngine
 
 from pva_tsdb_connector.exceptions import TSDBException
 from pva_tsdb_connector.postgres_connector.configs import ConnectorSettings
@@ -33,6 +37,11 @@ from pva_tsdb_connector.models import (
     TSToTagModel,
     MetricModel,
     TSToMetricModel,
+    TSWithTagsAndDataModel,
+    NewMetricValueModel,
+    TSWithValues,
+    MetricValueWithOperands,
+    TSWithVisualizationVectorModel,
 )
 from pva_tsdb_connector.postgres_connector.mappers import Mapper
 from pva_tsdb_connector.enums import AllOrAnyTags
@@ -52,14 +61,13 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             port=self._config.connection.port,
             database=self._config.connection.db_name,
         )
-        self._engine = None
         self._metadata = MetaData()
 
-    async def connect(self):
+    async def connect(self) -> None:
         try:
-            self._engine = create_async_engine(
+            self._engine: AsyncEngine = create_async_engine(
                 self._url,
-                echo=False,
+                echo=True,
                 echo_pool=False,
                 pool_size=self._config.connection.pool_min_size,
                 max_overflow=self._config.connection.pool_max_size
@@ -68,7 +76,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             )
         except Exception as ex:
             err_msg = f"Failed to create SQLA engine to PostgreSQL. Error: {ex}."
-            self._logger.error(err_msg, exc_info=True)
+            self._logger.exception(err_msg)
             raise TSDBException(err_msg) from Exception
         self._logger.info("Initialized Connector")
 
@@ -77,17 +85,22 @@ class AsyncPostgresSQLAlchemyCoreConnector:
                 await conn.run_sync(self._metadata.reflect)
         except Exception as ex:
             err_msg = f"Failed to reflect DB. Error: {ex}"
-            self._logger.error(err_msg, exc_info=True)
+            self._logger.exception(err_msg)
             raise TSDBException(err_msg) from Exception
         self._logger.info("Reflected DB")
 
     async def init_db(self, metric_models: list[MetricModel]):
+        async with self._engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            await conn.commit()
         await self.get_metadata_table()
         await self.get_ts_table()
         await self.get_tags_table()
         await self.get_ts_to_tags_table()
         await self.get_metrics_table()
-        await self.get_ts_to_metrics_table()
+        await self.get_metric_values_table()
+        await self.get_metric_value_operands_table()
+        await self.get_ts_visualization_vectors_table()
 
         async with self._engine.begin() as conn:
             await conn.run_sync(self._metadata.create_all)
@@ -108,22 +121,22 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             Column(self._config.names.meta_ts_description_col, Text, nullable=True),
             Column(
                 self._config.names.meta_ts_last_time_col,
-                DateTime(timezone=False),
+                DateTime(timezone=True),
                 nullable=False,
             ),
             Column(
                 self._config.names.meta_ts_last_update_time_col,
-                DateTime(timezone=False),
+                DateTime(timezone=True),
                 nullable=False,
             ),
             Column(
                 self._config.names.meta_ts_successful_last_update_time_col,
-                DateTime(timezone=False),
+                DateTime(timezone=True),
                 nullable=False,
             ),
             Column(
                 self._config.names.meta_ts_next_update_time_col,
-                DateTime(timezone=False),
+                DateTime(timezone=True),
                 nullable=True,
             ),
             Column(
@@ -168,7 +181,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             self._config.names.ts_table,
             self._metadata,
             Column(
-                self._config.names.ts_time_col, DateTime(timezone=False), nullable=False
+                self._config.names.ts_time_col, DateTime(timezone=True), nullable=False
             ),
             Column(self._config.names.ts_value_col, DOUBLE_PRECISION(), nullable=True),
             Column(
@@ -287,48 +300,109 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         )
         return table
 
-    async def get_ts_to_metrics_table(self):
-        table = self._metadata.tables.get(self._config.names.ts_to_metrics_table, None)
+    async def get_metric_values_table(self):
+        table = self._metadata.tables.get(self._config.names.metric_values_table, None)
         if table is not None:
             return table
         table = Table(
-            self._config.names.ts_to_metrics_table,
+            self._config.names.metric_values_table,
             self._metadata,
+            Column(self._config.names.metric_values_uid_col, Integer),
             Column(
-                self._config.names.ts_to_metric_ts_uid_col,
-                Integer,
-                ForeignKey(
-                    f"{self._config.names.meta_ts_table}.{self._config.names.meta_ts_uid_col}",
-                    name=f"{self._config.names.ts_to_metric_ts_uid_col}_fkey",
-                ),
-            ),
-            Column(
-                self._config.names.ts_to_metric_metric_uid_col,
+                self._config.names.metric_values_metric_uid_col,
                 Integer,
                 ForeignKey(
                     f"{self._config.names.metrics_table}.{self._config.names.metric_uid_col}",
-                    name=f"{self._config.names.ts_to_metric_metric_uid_col}_fkey",
+                    name=f"{self._config.names.metric_values_metric_uid_col}_fkey",
                 ),
             ),
             Column(
-                self._config.names.ts_to_metric_value_col,
+                self._config.names.metric_values_value_col,
                 DOUBLE_PRECISION(),
                 nullable=True,
             ),
-            Column(self._config.names.ts_to_metric_data_json_col, JSONB, nullable=True),
+            Column(
+                self._config.names.metric_values_data_json_col, JSONB, nullable=True
+            ),
             PrimaryKeyConstraint(
-                self._config.names.ts_to_metric_ts_uid_col,
-                self._config.names.ts_to_metric_metric_uid_col,
-                name=self._config.names.ts_to_metric_pkey,
+                self._config.names.metric_values_uid_col,
+                name=self._config.names.metric_values_pkey,
             ),
         )
         Index(
-            self._config.names.ts_to_metric_value_index,
-            table.c[self._config.names.ts_to_metric_value_col],
+            self._config.names.metric_values_value_index,
+            table.c[self._config.names.metric_values_value_col],
         )
         Index(
-            self._config.names.ts_to_metric_metric_uid_index,
-            table.c[self._config.names.ts_to_metric_metric_uid_col],
+            self._config.names.metric_values_metric_uid_index,
+            table.c[self._config.names.metric_values_metric_uid_col],
+        )
+        return table
+
+    async def get_metric_value_operands_table(self):
+        table = self._metadata.tables.get(
+            self._config.names.metric_value_operands_table, None
+        )
+        if table is not None:
+            return table
+        table = Table(
+            self._config.names.metric_value_operands_table,
+            self._metadata,
+            Column(
+                self._config.names.metric_value_operands_metric_value_uid_col,
+                Integer,
+                ForeignKey(
+                    f"{self._config.names.metric_values_table}.{self._config.names.metric_values_uid_col}",
+                    name=f"{self._config.names.metric_value_operands_metric_value_uid_col}_fkey",
+                    ondelete="CASCADE",
+                ),
+            ),
+            Column(
+                self._config.names.metric_value_operands_ts_uid_col,
+                Integer,
+                ForeignKey(
+                    f"{self._config.names.meta_ts_table}.{self._config.names.meta_ts_uid_col}",
+                    name=f"{self._config.names.metric_value_operands_ts_uid_col}_fkey",
+                    ondelete="CASCADE",
+                ),
+            ),
+        )
+        Index(
+            self._config.names.metric_value_operands_metric_value_uid_index,
+            table.c[self._config.names.metric_value_operands_metric_value_uid_col],
+        )
+        Index(
+            self._config.names.metric_value_operands_ts_uid_index,
+            table.c[self._config.names.metric_value_operands_ts_uid_col],
+        )
+        return table
+
+    async def get_ts_visualization_vectors_table(self):
+        table = self._metadata.tables.get(
+            self._config.names.ts_visualization_vectors_table, None
+        )
+        if table is not None:
+            return table
+        table = (
+            Table(
+                self._config.names.ts_visualization_vectors_table,
+                self._metadata,
+                Column(
+                    self._config.names.ts_visualization_vectors_ts_uid_col,
+                    Integer,
+                    ForeignKey(
+                        f"{self._config.names.meta_ts_table}.{self._config.names.meta_ts_uid_col}",
+                        name=f"{self._config.names.ts_visualization_vectors_ts_uid_col}_fkey",
+                    ),
+                ),
+                Column(
+                    self._config.names.ts_visualization_vectors_vector_col, Vector(2)
+                ),
+                PrimaryKeyConstraint(
+                    self._config.names.ts_visualization_vectors_ts_uid_col,
+                    name=self._config.names.ts_visualization_vectors_pkey,
+                ),
+            ),
         )
         return table
 
@@ -349,7 +423,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             await conn.commit()
 
     async def get_metrics(
-        self, conn: AsyncConnection, uids: list[int] = None
+        self, conn: AsyncConnection, uids: list[int] | None = None
     ) -> list[MetricModel]:
         table = await self.get_metrics_table()
         stmt = select(table)
@@ -386,8 +460,8 @@ class AsyncPostgresSQLAlchemyCoreConnector:
     async def get_tags(
         self,
         conn: AsyncConnection,
-        uids: list[int] = None,
-        uids_from_source: list[str] = None,
+        uids: list[int] | None = None,
+        uids_from_source: list[str] | None = None,
     ) -> list[TagModel]:
         table = await self.get_tags_table()
         stmt = select(table)
@@ -410,7 +484,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         ]
 
     async def get_ts_to_tags(
-        self, conn: AsyncConnection, ts_uids: list[int] = None
+        self, conn: AsyncConnection, ts_uids: list[int] | None = None
     ) -> list[TSToTagModel]:
         table = await self.get_ts_to_tags_table()
         stmt = select(table)
@@ -437,17 +511,18 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         return await conn.execute(
             insert(table)
             .values(db_dicts)
-            .on_conflict_do_nothing(self._config.names.ts_to_tags_unique_constraint)
+            .on_conflict_do_nothing(self._config.names.ts_to_tag_pkey)
         )
 
     async def get_metadata(
         self,
         conn: AsyncConnection,
-        uids: list[int] = None,
-        order_by: str = None,
+        uids: list[int] | None = None,
+        data_source_uid: str | None = None,
+        order_by: str | None = None,
         order_asc: bool = True,
-        limit: int = None,
-        offset: int = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[TSMetadataModel]:
         table = await self.get_metadata_table()
         stmt = select(table)
@@ -455,13 +530,17 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             if len(uids) == 0:
                 return []
             stmt = stmt.where(table.c[self._config.names.metric_uid_col].in_(uids))
+        if data_source_uid is not None:
+            stmt = stmt.where(
+                table.c[self._config.names.meta_ts_source_uid_col] == data_source_uid
+            )
         if order_by is not None:
             order_by_column = table.c[order_by]
             if order_asc:
-                order_by_column = order_by_column.asc()
+                order_by_column_ordered = order_by_column.asc()
             else:
-                order_by_column = order_by_column.desc()
-            stmt = stmt.order_by(order_by_column)
+                order_by_column_ordered = order_by_column.desc()
+            stmt = stmt.order_by(order_by_column_ordered)
         if limit is not None:
             stmt = stmt.limit(limit)
         if offset is not None:
@@ -474,15 +553,60 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         ]
 
     async def get_ts_to_metrics(
-        self, conn: AsyncConnection, ts_uids: list[int] = None
+        self,
+        conn: AsyncConnection,
+        ts_uids: list[int] | None = None,
+        metric_uids: list[int] | None = None,
     ) -> list[TSToMetricModel]:
-        table = await self.get_ts_to_metrics_table()
-        stmt = select(table)
+        metric_values_table = await self.get_metric_values_table()
+        operands_table = await self.get_metric_value_operands_table()
+
+        stmt = (
+            select(
+                metric_values_table.c[self._config.names.metric_values_uid_col],
+                metric_values_table.c[self._config.names.metric_values_metric_uid_col],
+                metric_values_table.c[self._config.names.metric_values_value_col],
+                metric_values_table.c[self._config.names.metric_values_data_json_col],
+                func.array_agg(
+                    operands_table.columns[
+                        self._config.names.metric_value_operands_ts_uid_col
+                    ]
+                ).label("ts_uids"),
+            )
+            .join(
+                operands_table,
+                metric_values_table.c[self._config.names.metric_values_uid_col]
+                == operands_table.c[
+                    self._config.names.metric_value_operands_metric_value_uid_col
+                ],
+            )
+            .group_by(metric_values_table.c[self._config.names.metric_values_uid_col])
+        )
+
+        if metric_uids is not None:
+            if len(metric_uids) == 0:
+                return list()
+            stmt = stmt.where(
+                metric_values_table.c[
+                    self._config.names.metric_values_metric_uid_col
+                ].in_(metric_uids)
+            )
+
         if ts_uids is not None:
             if len(ts_uids) == 0:
-                return []
+                return list()
             stmt = stmt.where(
-                table.c[self._config.names.ts_to_metric_ts_uid_col].in_(ts_uids)
+                metric_values_table.c[self._config.names.metric_values_uid_col].in_(
+                    select(
+                        operands_table.c[
+                            self._config.names.metric_value_operands_metric_value_uid_col
+                        ]
+                    ).where(
+                        operands_table.c[
+                            self._config.names.metric_value_operands_ts_uid_col
+                        ].in_(ts_uids)
+                    )
+                )
             )
         results = (await conn.execute(stmt)).mappings().fetchall()
         return [
@@ -492,78 +616,143 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             for d in results
         ]
 
-    async def upsert_ts_to_metrics(
+    async def insert_ts_to_metrics(
         self, conn: AsyncConnection, ts_to_metrics_models: list[TSToMetricModel]
     ):
-        db_dicts = [
-            Mapper.ts_to_metric_model_to_db_dict(model, names=self._config.names)
-            for model in ts_to_metrics_models
-        ]
-        table = await self.get_ts_to_metrics_table()
-        for db_dict in db_dicts:
-            await conn.execute(
-                insert(table)
-                .values(db_dict)
-                .on_conflict_do_update(
-                    constraint=self._config.names.ts_to_metric_pkey,
-                    set_={
-                        self._config.names.ts_to_metric_value_col: db_dict[
-                            self._config.names.ts_to_metric_value_col
-                        ],
-                        self._config.names.ts_to_metric_json_col: db_dict[
-                            self._config.names.ts_to_metric_json_co
-                        ],
-                    },
+        if len(ts_to_metrics_models) == 0:
+            return
+        metric_values_table = await self.get_metric_values_table()
+        operands_table = await self.get_metric_value_operands_table()
+
+        page_size: int = 1024
+        inserted: int = 0
+        while inserted < len(ts_to_metrics_models):
+            ts_to_metrics_models_page: list[TSToMetricModel] = ts_to_metrics_models[
+                inserted : inserted + page_size
+            ]
+            models_page: list[NewMetricValueModel] = [
+                NewMetricValueModel.from_ts_to_metric_model(m)
+                for m in ts_to_metrics_models_page
+            ]
+
+            result = (
+                (
+                    await conn.execute(
+                        insert(metric_values_table)
+                        .values(
+                            [
+                                Mapper.new_metric_value_model_to_db_dict(
+                                    m, self._config.names
+                                )
+                                for m in models_page
+                            ]
+                        )
+                        .returning(
+                            metric_values_table.c[
+                                self._config.names.metric_values_uid_col
+                            ]
+                        )
+                    )
                 )
+                .mappings()
+                .fetchall()
             )
 
-    async def delete_ts_to_metrics(
-        self, conn: AsyncConnection, ts_uids: list[int]
+            if len(result) != len(ts_to_metrics_models_page):
+                err_msg = "Result length mismatch between inserted rows result and ts_to_metrics_models_page."
+                self._logger.error(err_msg, exc_info=True)
+                raise TSDBException(err_msg) from Exception
+
+            operands_rows: list[dict] = list()
+            for i, row in enumerate(result):
+                metric_value_uid = row["uid"]
+                ts_to_metric_model = ts_to_metrics_models_page[i]
+                for operand_uid in ts_to_metric_model.ts_uids:
+                    operands_rows.append(
+                        {
+                            self._config.names.metric_value_operands_metric_value_uid_col: metric_value_uid,
+                            self._config.names.metric_value_operands_ts_uid_col: operand_uid,
+                        }
+                    )
+
+            await conn.execute(insert(operands_table).values(operands_rows))
+
+            inserted += len(result)
+
+    async def delete_metric_values(
+        self,
+        conn: AsyncConnection,
+        ts_uids: list[int],
+        metric_ids: list[int],
+        operands_count: int,
     ) -> None:
-        if len(ts_uids) == 0:
+        if len(metric_ids) == 0:
             return
-        table = await self.get_ts_to_metrics_table()
-        await conn.execute(
-            delete(table).where(
-                table.c[self._config.names.ts_to_metric_ts_uid_col].in_(ts_uids)
-            )
+
+        metric_values_table = await self.get_metric_values_table()
+        operands_table = await self.get_metric_value_operands_table()
+        min_aggr = func.min(
+            operands_table.c[self._config.names.metric_value_operands_ts_uid_col]
+        )
+        count_aggr = func.count(
+            operands_table.c[self._config.names.metric_value_operands_ts_uid_col]
         )
 
+        stmt = delete(metric_values_table).where(
+            and_(
+                metric_values_table.c[
+                    self._config.names.metric_values_metric_uid_col
+                ].in_(metric_ids),
+                metric_values_table.c[self._config.names.metric_values_uid_col].in_(
+                    select(
+                        operands_table.c[
+                            self._config.names.metric_value_operands_metric_value_uid_col
+                        ]
+                    )
+                    .group_by(
+                        operands_table.c[
+                            self._config.names.metric_value_operands_metric_value_uid_col
+                        ]
+                    )
+                    .having(and_(min_aggr.in_(ts_uids), count_aggr == operands_count))
+                ),
+            )
+        )
+        await conn.execute(stmt)
+
     async def create_ts_metadata(
-        self, ts_metadata_model: NewTSMetadataModel
+        self, conn: AsyncConnection, ts_metadata_model: NewTSMetadataModel
     ) -> TSMetadataModel:
         db_dict = Mapper.ts_metadata_model_to_db_dict(
             ts_metadata_model, names=self._config.names
         )
         table = await self.get_metadata_table()
-        with self._engine.connect() as conn:
-            res = await conn.execute(
-                insert(table).values([db_dict]).returning(table.c.uid)
-            )
-        return TSMetadataModel(uid=res[0], **(ts_metadata_model.model_dump()))
+        res = (
+            await conn.execute(insert(table).values([db_dict]).returning(table.c.uid))
+        ).fetchall()
+        return TSMetadataModel(uid=res[0][0], **(ts_metadata_model.model_dump()))
 
-    async def update_ts_metadata(self, ts_metadata_model: TSMetadataModel) -> None:
+    async def update_ts_metadata(
+        self, conn: AsyncConnection, ts_metadata_model: TSMetadataModel
+    ) -> None:
         db_dict = Mapper.ts_metadata_model_to_db_dict(
             ts_metadata_model, names=self._config.names
         )
         table = await self.get_metadata_table()
-        async with self._engine.connect() as conn:
-            await conn.execute(
-                update(table)
-                .where(
-                    table.c[self._config.names.meta_ts_uid_col] == ts_metadata_model.uid
-                )
-                .values(
-                    {
-                        k: v
-                        for k, v in db_dict.items()
-                        if k != self._config.names.meta_ts_uid_col
-                    }
-                )
+        await conn.execute(
+            update(table)
+            .where(table.c[self._config.names.meta_ts_uid_col] == ts_metadata_model.uid)
+            .values(
+                {
+                    k: v
+                    for k, v in db_dict.items()
+                    if k != self._config.names.meta_ts_uid_col
+                }
             )
+        )
 
     async def update_ts_metadata_col(
-        self, conn: AsyncConnection, col_name: str, uids: list[int], value: any
+        self, conn: AsyncConnection, col_name: str, uids: list[int], value: Any
     ) -> None:
         table = await self.get_metadata_table()
         await conn.execute(
@@ -577,6 +766,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         conn: AsyncConnection,
         ts_uids: list[int] | None = None,
         order_asc: bool = True,
+        start_date: datetime.datetime | None = None,
     ) -> list[TSDataModel]:
         table = await self.get_ts_table()
         stmt = select(table)
@@ -584,12 +774,14 @@ class AsyncPostgresSQLAlchemyCoreConnector:
             if len(ts_uids) == 0:
                 return []
             stmt = stmt.where(table.c[self._config.names.ts_uid_col].in_(ts_uids))
+        if start_date is not None:
+            stmt = stmt.where(table.c[self._config.names.ts_time_col] >= start_date)
         order_by_column = table.columns[self._config.names.ts_time_col]
         if order_asc:
-            order_by_column = order_by_column.asc()
+            order_by_column_ordered = order_by_column.asc()
         else:
-            order_by_column = order_by_column.desc()
-        stmt = stmt.order_by(order_by_column)
+            order_by_column_ordered = order_by_column.desc()
+        stmt = stmt.order_by(order_by_column_ordered)
         results = (await conn.execute(stmt)).mappings().fetchall()
         return [
             Mapper.db_row_to_ts_data_model(row, names=self._config.names)
@@ -602,13 +794,21 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         if len(models) == 0:
             return
         table = await self.get_ts_table()
-        await conn.execute(
-            insert(table)
-            .values(
-                [Mapper.ts_data_model_to_db_dict(m, self._config.names) for m in models]
+        page_size: int = 1024
+        inserted: int = 0
+        while inserted < len(models):
+            models_page: list[TSDataModel] = models[inserted : inserted + page_size]
+            result = await conn.execute(
+                insert(table)
+                .values(
+                    [
+                        Mapper.ts_data_model_to_db_dict(m, self._config.names)
+                        for m in models_page
+                    ]
+                )
+                .on_conflict_do_nothing(self._config.names.ts_pkey)
             )
-            .on_conflict_do_nothing(self._config.names.ts_pkey)
-        )
+            inserted += result.rowcount
 
     async def get_last_ts_times(
         self, conn: AsyncConnection, ts_uids: list[int]
@@ -626,7 +826,47 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         result = (await conn.execute(stmt)).mappings().fetchall()
         return {r[self._config.names.ts_uid_col]: r["max"] for r in result}
 
-    async def get_filtered_metadata(
+    async def _get_tags_subquery(
+        self,
+        tag_uids: list[int] | None,
+        all_or_any_tags: AllOrAnyTags,
+    ):
+        if tag_uids is None or len(tag_uids) == 0:
+            return None
+
+        ts_to_tags_table = await self.get_ts_to_tags_table()
+        if all_or_any_tags == AllOrAnyTags.ANY:
+            return select(
+                distinct(ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col])
+            ).where(
+                ts_to_tags_table.c[self._config.names.ts_to_tag_tag_uid_col].in_(
+                    tag_uids
+                )
+            )
+        else:
+            return (
+                select(
+                    distinct(
+                        ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col]
+                    )
+                )
+                .where(
+                    ts_to_tags_table.c[self._config.names.ts_to_tag_tag_uid_col].in_(
+                        tag_uids
+                    )
+                )
+                .group_by(ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col])
+                .having(
+                    func.count(
+                        distinct(
+                            ts_to_tags_table.c[self._config.names.ts_to_tag_tag_uid_col]
+                        )
+                    )
+                    == len(tag_uids)
+                )
+            )
+
+    async def get_ordered_values_and_operands(
         self,
         conn: AsyncConnection,
         order_by_metric_uid: int,
@@ -635,80 +875,326 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         limit: int,
         offset: int,
         tag_uids: list[int] | None,
-    ) -> list[TSMetadataModel]:
+    ) -> list[MetricValueWithOperands]:
+        if order_by_metric_uid in [16, 17, 18]:
+            limit *= 2
+            offset *= 2
+        if limit == 0:
+            return list()
+
         meta_ts_table = await self.get_metadata_table()
-        ts_to_metrics_table = await self.get_ts_to_metrics_table()
-        ts_to_tags_table = await self.get_ts_to_tags_table()
-        order_by_col = ts_to_metrics_table.c[self._config.names.ts_to_metric_value_col]
+        metric_values_table = await self.get_metric_values_table()
+        operands_table = await self.get_metric_value_operands_table()
+        order_by_col = metric_values_table.c[self._config.names.metric_values_value_col]
         if order_asc:
             order_by_col = order_by_col.asc()
         else:
             order_by_col = order_by_col.desc()
 
-        where_clauses = [
-            ts_to_metrics_table.c[self._config.names.ts_to_metric_metric_uid_col]
+        tags_subquery = await self._get_tags_subquery(
+            tag_uids=tag_uids, all_or_any_tags=all_or_any_tags
+        )
+        metric_value_where_clauses = [
+            metric_values_table.c[self._config.names.metric_values_metric_uid_col]
             == order_by_metric_uid
         ]
-        tags_subquery = None
-        if tag_uids is not None and len(tag_uids) > 0:
-            if all_or_any_tags == AllOrAnyTags.ANY:
-                tags_subquery = select(
-                    distinct(
-                        ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col]
-                    )
-                ).where(
-                    ts_to_tags_table.c[self._config.names.ts_to_tag_tag_uid_col].in_(
-                        tag_uids
-                    )
-                )
-            elif all_or_any_tags == AllOrAnyTags.ALL:
-                tags_subquery = (
-                    select(
-                        distinct(
-                            ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col]
-                        )
-                    )
-                    .where(
-                        ts_to_tags_table.c[
-                            self._config.names.ts_to_tag_tag_uid_col
-                        ].in_(tag_uids)
-                    )
-                    .group_by(
-                        ts_to_tags_table.c[self._config.names.ts_to_tag_ts_uid_col]
-                    )
-                    .having(
-                        func.count(
-                            distinct(
-                                ts_to_tags_table.c[
-                                    self._config.names.ts_to_tag_tag_uid_col
-                                ]
-                            )
-                        )
-                        == len(tag_uids)
-                    )
-                )
+        if tags_subquery is not None:
+            metric_value_where_clauses.append(
+                operands_table.c[
+                    self._config.names.metric_value_operands_ts_uid_col
+                ].in_(tags_subquery)
+            )
 
-        if tags_subquery is None:
-            where_clause = where_clauses[0]
-        else:
-            where_clause = and_(
-                where_clauses[0], meta_ts_table.c["uid"].in_(tags_subquery)
-            )
         stmt = (
-            select(meta_ts_table)
-            .join(
-                ts_to_metrics_table,
-                meta_ts_table.c[self._config.names.meta_ts_uid_col]
-                == ts_to_metrics_table.c[self._config.names.ts_to_metric_ts_uid_col],
+            select(
+                meta_ts_table,
+                metric_values_table.c[
+                    self._config.names.metric_values_metric_uid_col
+                ].label("order_by_metric_uid"),
+                metric_values_table.c[self._config.names.metric_values_value_col].label(
+                    "order_by_metric_value"
+                ),
             )
-            .where(where_clause)
+            .join(
+                operands_table,
+                meta_ts_table.c[self._config.names.meta_ts_uid_col]
+                == operands_table.c[
+                    self._config.names.metric_value_operands_ts_uid_col
+                ],
+            )
+            .join(
+                metric_values_table,
+                metric_values_table.c[self._config.names.metric_values_uid_col]
+                == operands_table.c[
+                    self._config.names.metric_value_operands_metric_value_uid_col
+                ],
+            )
+            .where(
+                metric_values_table.c[self._config.names.metric_values_uid_col].in_(
+                    select(
+                        metric_values_table.c[self._config.names.metric_values_uid_col]
+                    )
+                    .join(
+                        operands_table,
+                        metric_values_table.c[self._config.names.metric_values_uid_col]
+                        == operands_table.c[
+                            self._config.names.metric_value_operands_metric_value_uid_col
+                        ],
+                    )
+                    .where(and_(*metric_value_where_clauses))
+                )
+            )
             .order_by(order_by_col)
+            .order_by(
+                metric_values_table.c[self._config.names.metric_values_uid_col].asc()
+            )
+            .order_by(
+                operands_table.c[
+                    self._config.names.metric_value_operands_ts_uid_col
+                ].asc()
+            )
             .offset(offset)
             .limit(limit)
         )
         res = (await conn.execute(stmt)).mappings().fetchall()
+
+        chartop: list[MetricValueWithOperands] = list()
+        increment: int = 1
+        if order_by_metric_uid in [16, 17, 18]:
+            increment = 2
+        i: int = 0
+        while i < len(res):
+            operand_rows = res[i : i + increment]
+            chartop.append(
+                MetricValueWithOperands(
+                    operands=[
+                        Mapper.db_row_to_metadata_model(row, names=self._config.names)
+                        for row in operand_rows
+                    ],
+                    metric_uid=operand_rows[0]["order_by_metric_uid"],
+                    metric_value=operand_rows[0]["order_by_metric_value"],
+                )
+            )
+            i += increment
+        return chartop
+
+    async def get_ts_with_tags_and_data(
+        self, t0: datetime.datetime, offset: int, limit: int
+    ) -> list[TSWithTagsAndDataModel]:
+        meta_ts_table = await self.get_metadata_table()
+        ts_to_tags_table = await self.get_ts_to_tags_table()
+        tags_subquery = (
+            select(
+                meta_ts_table.columns[self._config.names.meta_ts_uid_col].label("uid"),
+                func.array_agg(
+                    ts_to_tags_table.columns[self._config.names.ts_to_tag_tag_uid_col]
+                ).label("tag_uids"),
+            )
+            .join(
+                ts_to_tags_table,
+                meta_ts_table.columns[self._config.names.meta_ts_uid_col]
+                == ts_to_tags_table.columns[self._config.names.ts_to_tag_ts_uid_col],
+            )
+            .group_by(meta_ts_table.columns[self._config.names.meta_ts_uid_col])
+            .alias("tags_subquery")
+        )
+
+        ts_table = await self.get_ts_table()
+        values_subquery = (
+            select(
+                meta_ts_table.columns[self._config.names.meta_ts_uid_col].label("uid"),
+                func.array_agg(
+                    aggregate_order_by(
+                        ts_table.columns[self._config.names.ts_time_col],
+                        ts_table.columns[self._config.names.ts_time_col],
+                    )
+                ).label("times"),
+                func.array_agg(
+                    aggregate_order_by(
+                        ts_table.columns[self._config.names.ts_value_col],
+                        ts_table.columns[self._config.names.ts_time_col],
+                    )
+                ).label("values"),
+            )
+            .join(
+                ts_table,
+                meta_ts_table.columns[self._config.names.meta_ts_uid_col]
+                == ts_table.columns[self._config.names.ts_uid_col],
+            )
+            .where(ts_table.columns[self._config.names.ts_time_col] > t0)
+            .group_by(meta_ts_table.columns[self._config.names.meta_ts_uid_col])
+            .alias("values_subquery")
+        )
+
+        stmt = (
+            select(
+                tags_subquery.c["uid"],
+                tags_subquery.c["tag_uids"],
+                values_subquery.c["times"],
+                values_subquery.c["values"],
+            )
+            .join(values_subquery, tags_subquery.c.uid == values_subquery.c.uid)
+            .order_by(tags_subquery.c["uid"].asc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        async with self._engine.connect() as conn:
+            results = (await conn.execute(stmt)).mappings().fetchall()
+        return [Mapper.db_row_to_ts_with_tags_and_data_model(d) for d in results]
+
+    async def get_ts_with_values_metric_values(
+        self, metric_ids: list[int]
+    ) -> list[TSWithValues]:
+        meta_ts_table = await self.get_metadata_table()
+        metric_values_table = await self.get_metric_values_table()
+        operands_table = await self.get_metric_value_operands_table()
+        values_array_agg = func.array_agg(
+            aggregate_order_by(
+                metric_values_table.c[self._config.names.metric_values_value_col],
+                metric_values_table.c[
+                    self._config.names.metric_values_metric_uid_col
+                ].asc(),
+            )
+        )
+        stmt = (
+            select(
+                meta_ts_table.c[self._config.names.meta_ts_uid_col].label("ts_uid"),
+                values_array_agg.label("values"),
+            )
+            .join(
+                operands_table,
+                meta_ts_table.c[self._config.names.meta_ts_uid_col]
+                == operands_table.c[
+                    self._config.names.metric_value_operands_ts_uid_col
+                ],
+            )
+            .join(
+                metric_values_table,
+                operands_table.c[
+                    self._config.names.metric_value_operands_metric_value_uid_col
+                ]
+                == metric_values_table.c[self._config.names.metric_values_uid_col],
+            )
+            .where(
+                metric_values_table.c[
+                    self._config.names.metric_values_metric_uid_col
+                ].in_(metric_ids)
+            )
+            .group_by(meta_ts_table.columns[self._config.names.meta_ts_uid_col])
+            .having(func.array_length(values_array_agg, 1) == len(metric_ids))
+        )
+        async with self._engine.connect() as conn:
+            results = (await conn.execute(stmt)).mappings().fetchall()
+        return [Mapper.db_row_to_ts_with_values(d) for d in results]
+
+    async def delete_ts_visualization_vectors(self, conn: AsyncConnection):
+        ts_visualization_vectors_table = await self.get_ts_visualization_vectors_table()
+        stmt = delete(ts_visualization_vectors_table)
+        await conn.execute(stmt)
+
+    async def insert_ts_visualization_vectors(
+        self, conn: AsyncConnection, models: list[TSWithValues]
+    ):
+        ts_visualization_vectors_table = await self.get_ts_visualization_vectors_table()
+        page_size: int = 1024
+        inserted: int = 0
+        while inserted < len(models):
+            models_page = models[inserted : inserted + page_size]
+            stmt = insert(ts_visualization_vectors_table).values(
+                [
+                    Mapper.ts_with_values_model_to_db_dict(m, self._config.names)
+                    for m in models_page
+                ]
+            )
+            result = await conn.execute(stmt)
+            inserted += result.rowcount
+
+    async def get_ts_with_visualization_vector(
+        self,
+        conn: AsyncConnection,
+        origin_vector: list[float] | None,
+        origin_ts_uid: int | None,
+        radius: float,
+        limit: int,
+        exclude_ts_uids: list[int] | None = None,
+    ) -> list[TSWithVisualizationVectorModel]:
+        meta_ts_table = await self.get_metadata_table()
+        ts_visualization_vectors_table = await self.get_ts_visualization_vectors_table()
+        join_stmt = select(
+            meta_ts_table,
+            ts_visualization_vectors_table.c[
+                self._config.names.ts_visualization_vectors_vector_col
+            ],
+        ).join(
+            ts_visualization_vectors_table,
+            meta_ts_table.c[self._config.names.meta_ts_uid_col]
+            == ts_visualization_vectors_table.c[
+                self._config.names.ts_visualization_vectors_ts_uid_col
+            ],
+        )
+        stmt = (
+            join_stmt.where(
+                ts_visualization_vectors_table.c[
+                    self._config.names.ts_visualization_vectors_vector_col
+                ].l2_distance(
+                    origin_vector
+                    if origin_vector is not None
+                    else (
+                        select(
+                            ts_visualization_vectors_table.c[
+                                self._config.names.ts_visualization_vectors_vector_col
+                            ]
+                        ).where(
+                            ts_visualization_vectors_table.c[
+                                self._config.names.ts_visualization_vectors_ts_uid_col
+                            ]
+                            == origin_ts_uid
+                        )
+                    )
+                )
+                <= radius
+            )
+            .order_by(meta_ts_table.c[self._config.names.meta_ts_uid_col].asc())
+            .limit(limit)
+        )
+        if origin_ts_uid is not None:
+            stmt = stmt.union(  # type: ignore
+                join_stmt.where(
+                    meta_ts_table.c[self._config.names.meta_ts_uid_col] == origin_ts_uid
+                )
+            )
+        if exclude_ts_uids:
+            vv_subquery = stmt.alias("vv_subquery")
+            stmt = select(vv_subquery).where(
+                vv_subquery.c[self._config.names.meta_ts_uid_col].not_in(
+                    exclude_ts_uids
+                )
+            )
+
+        results = (await conn.execute(stmt)).mappings().fetchall()
         return [
-            Mapper.db_row_to_metadata_model(r, names=self._config.names) for r in res
+            Mapper.db_row_to_ts_with_visualization_vector(d, self._config.names)
+            for d in results
+        ]
+
+    async def get_ts_uids_with_vv(
+        self, conn: AsyncConnection, ts_uids: list[int]
+    ) -> list[int]:
+        ts_uids = list(set(ts_uids))
+        ts_visualization_vectors_table = await self.get_ts_visualization_vectors_table()
+        stmt = select(
+            ts_visualization_vectors_table.c[
+                self._config.names.ts_visualization_vectors_ts_uid_col
+            ]
+        ).where(
+            ts_visualization_vectors_table.c[
+                self._config.names.ts_visualization_vectors_ts_uid_col
+            ].in_(ts_uids)
+        )
+        results = (await conn.execute(stmt)).mappings().fetchall()
+        return [
+            d[self._config.names.ts_visualization_vectors_ts_uid_col] for d in results
         ]
 
     async def close(self):

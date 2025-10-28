@@ -7,13 +7,13 @@ class MetricCategories(StrEnum):
 
 
 class MetricUnits(StrEnum):
-    PROPORTION: str = "proportion"
-    SECONDS: str = "seconds"
+    PROPORTION = "proportion"
+    SECONDS = "seconds"
 
 
 class MetricDefaultOrders(StrEnum):
-    ASC: str = "asc"
-    DESC: str = "desc"
+    ASC = "asc"
+    DESC = "desc"
 
 
 class TSStatusCodesEnum(IntEnum):
@@ -24,6 +24,7 @@ class TSStatusCodesEnum(IntEnum):
     API_PARSE_ERROR = 4
     DB_ERROR = 5
     API_RATE_LIMITED = 6
+    INTERNAL_ERROR = 7
 
 
 class AllOrAnyTags(StrEnum):

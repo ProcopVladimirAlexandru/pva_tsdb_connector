@@ -34,7 +34,7 @@ class NewTSMetadataModel(BaseModel):
     unit: str | None = Field(default=None, title="TS Unit")
 
     def get_log_name(self) -> str:
-        return f"[new_ts][{self.name}]"
+        return f"[new_ts][{self.source_uid}][{self.name}]"
 
 
 class TSMetadataModel(NewTSMetadataModel):
@@ -43,7 +43,7 @@ class TSMetadataModel(NewTSMetadataModel):
     next_update_time: datetime.datetime = Field(title="Timeseries Next Update Datetime")
 
     def get_log_name(self) -> str:
-        return f"[ts][{self.name}][{self.uid}]"
+        return f"[ts][{self.source_uid}][{self.name}][{self.uid}]"
 
 
 class NewTSDataModel(BaseModel):
@@ -88,7 +88,52 @@ class TSToMetricJSONModel(BaseModel):
 
 
 class TSToMetricModel(BaseModel):
-    ts_uid: int = Field(title="TS UID")
+    ts_uids: list[int] = Field(title="TS UIDs")
     metric_uid: int = Field(title="Metric UID")
     value: float = Field(title="Metric Value")
     data_json: str | None = Field(default=None, title="Metric JSON Data")
+
+
+class TSWithTagsAndDataModel(BaseModel):
+    uid: int = Field(title="Timeseries Integer UID")
+    tag_uids: list[int] = Field(title="Timeseries Tag UIDS")
+    data: list[NewTSDataModel] = Field(title="Timeseries Data")
+
+
+class NewMetricValueModel(BaseModel):
+    metric_uid: int = Field(title="Metric UID")
+    value: float = Field(title="Metric Value")
+    data_json: str | None = Field(default=None, title="Metric JSON Data")
+
+    @staticmethod
+    def from_ts_to_metric_model(model: TSToMetricModel) -> "NewMetricValueModel":
+        return NewMetricValueModel(
+            metric_uid=model.metric_uid,
+            value=model.value,
+            data_json=model.data_json,
+        )
+
+
+class MetricValueModel(NewMetricValueModel):
+    uid: int = Field(title="Metric UID")
+
+
+class MetricValueOperandModel(BaseModel):
+    metric_value_uid: int = Field(title="Metric Value UID")
+    ts_uid: int = Field(title="Timeseries UID")
+
+
+class TSWithValues(BaseModel):
+    uid: int = Field(title="Timeseries Integer UID")
+    values: list[float] = Field(title="List of Values")
+
+
+class MetricValueWithOperands(BaseModel):
+    operands: list[TSMetadataModel]
+    metric_uid: int
+    metric_value: float
+
+
+class TSWithVisualizationVectorModel(BaseModel):
+    metadata: TSMetadataModel
+    visualization_vector: list[float]

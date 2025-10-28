@@ -13,7 +13,7 @@ class ConnectionSettings(BaseSettings):
         min_length=1,
         alias="TSDB_HOST",
     )
-    port: int = Field(title="TimescaleDB Port", gte=1, alias="TSDB_PORT")
+    port: int = Field(title="TimescaleDB Port", gt=0, alias="TSDB_PORT")
     db_name: StrictStr = Field(
         title="TimescaleDB DB Name",
         description="TimescaleDB database to connect to.",
@@ -35,13 +35,13 @@ class ConnectionSettings(BaseSettings):
     pool_min_size: int = Field(
         default=3,
         title="Minimum Connection Pool Size",
-        gte=1,
+        gt=0,
         alias="TIMESCALE_POOL_MIN_SIZE",
     )
     pool_max_size: int = Field(
         default=35,
         title="Minimum Connection Pool Size",
-        gte=1,
+        gt=0,
         alias="TIMESCALE_POOL_MAX_SIZE",
     )
 
@@ -84,17 +84,39 @@ class NamingSettings(BaseSettings):
     metrics_table: StrictStr = Field(
         default="metrics", title="Metrics Table Name", min_length=1
     )
-    ts_to_metrics_table: StrictStr = Field(
-        default="ts_to_metrics", title="Timeseries to Metrics Table Name", min_length=1
+    metric_values_table: StrictStr = Field(
+        default="metric_values", title="Metric Values Table Name", min_length=1
     )
-    ts_to_metric_value_index: StrictStr = Field(
-        default="ts_to_metrics_value_index",
-        title="Timeseries to Metrics Value Index Name",
+    metric_values_value_index: StrictStr = Field(
+        default="metric_values_value_index",
+        title="Metrics Values Value Index Name",
         min_length=1,
     )
-    ts_to_metric_metric_uid_index: StrictStr = Field(
-        default="ts_to_metrics_metric_index",
-        title="Timeseries to Metrics Metric Index Name",
+    metric_values_metric_uid_index: StrictStr = Field(
+        default="metric_values_metric_index",
+        title="Metric Values Metric Index Name",
+        min_length=1,
+    )
+
+    metric_value_operands_table: StrictStr = Field(
+        default="metric_value_operands",
+        title="Metric Value Operands Table Name",
+        min_length=1,
+    )
+    metric_value_operands_metric_value_uid_index: StrictStr = Field(
+        default="metric_value_operands_metric_value_uid_index",
+        title="Metrics Value Operands Value UID Index Name",
+        min_length=1,
+    )
+    metric_value_operands_ts_uid_index: StrictStr = Field(
+        default="metric_value_operands_ts_uid_index",
+        title="Metrics Value Operands TS UID Index Name",
+        min_length=1,
+    )
+
+    ts_visualization_vectors_table: StrictStr = Field(
+        default="ts_visualization_vectors",
+        title="TS Visualization Vectors Table Name",
         min_length=1,
     )
 
@@ -224,25 +246,56 @@ class NamingSettings(BaseSettings):
         min_length=1,
     )
 
-    ts_to_metric_ts_uid_col: StrictStr = Field(
-        default="ts_uid", title="TS to Metrics Table TS UID Column Name", min_length=1
+    metric_values_uid_col: StrictStr = Field(
+        default="uid",
+        title="Metric Values UID Column Name",
+        min_length=1,
     )
-    ts_to_metric_metric_uid_col: StrictStr = Field(
+
+    metric_values_metric_uid_col: StrictStr = Field(
         default="metric_uid",
-        title="TS to Metrics Table Metric UID Column Name",
+        title="Metrics Values Table Metric UID Column Name",
         min_length=1,
     )
-    ts_to_metric_value_col: StrictStr = Field(
-        default="value", title="TS to Metrics Table Value UID Column Name", min_length=1
+    metric_values_value_col: StrictStr = Field(
+        default="value", title="Metric Values Table Value UID Column Name", min_length=1
     )
-    ts_to_metric_data_json_col: StrictStr = Field(
+    metric_values_data_json_col: StrictStr = Field(
         default="data_json",
-        title="TS to Metrics Table JSON Data Column Name",
+        title="Metric Values Table JSON Data Column Name",
         min_length=1,
     )
-    ts_to_metric_pkey: StrictStr = Field(
-        default="ts_to_metric_pkey",
-        title="TS to Metrics Table Primary Key Constraint Name",
+    metric_values_pkey: StrictStr = Field(
+        default="metric_values_pkey",
+        title="Metric Values Table Primary Key Constraint Name",
+        min_length=1,
+    )
+
+    metric_value_operands_metric_value_uid_col: StrictStr = Field(
+        default="metric_value_uid",
+        title="Metrics Value Operands Table Metric Value UID Column Name",
+        min_length=1,
+    )
+
+    metric_value_operands_ts_uid_col: StrictStr = Field(
+        default="ts_uid",
+        title="Metrics Value Operands Table TS UID Column Name",
+        min_length=1,
+    )
+
+    ts_visualization_vectors_ts_uid_col: StrictStr = Field(
+        default="ts_uid",
+        title="TS UID Column Name",
+        min_length=1,
+    )
+    ts_visualization_vectors_vector_col: StrictStr = Field(
+        default="vector",
+        title="Visualization Vector Column Name",
+        min_length=1,
+    )
+    ts_visualization_vectors_pkey: StrictStr = Field(
+        default="ts_visualization_vectors_pkey",
+        title="TS Visualization Vectors Primary Key",
         min_length=1,
     )
 

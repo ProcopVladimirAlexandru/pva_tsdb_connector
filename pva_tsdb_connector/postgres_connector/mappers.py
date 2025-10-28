@@ -1,4 +1,4 @@
-from typing import Mapping
+from typing import Mapping, Any
 
 from pva_tsdb_connector.models import (
     NewTSMetadataModel,
@@ -9,6 +9,11 @@ from pva_tsdb_connector.models import (
     TSToTagModel,
     MetricModel,
     TSToMetricModel,
+    TSWithTagsAndDataModel,
+    NewTSDataModel,
+    NewMetricValueModel,
+    TSWithValues,
+    TSWithVisualizationVectorModel,
 )
 from pva_tsdb_connector.enums import TSStatusCodesEnum
 from pva_tsdb_connector.postgres_connector.configs import NamingSettings
@@ -19,8 +24,8 @@ class Mapper(object):
     def ts_data_model_to_db_dict(model: TSDataModel, names: NamingSettings) -> dict:
         return {
             names.ts_uid_col: model.uid,
-            names.ts_time_col: model.ts_time_col,
-            names.ts_value_col: model.ts_value_col,
+            names.ts_time_col: model.time,
+            names.ts_value_col: model.value,
         }
 
     @staticmethod
@@ -87,8 +92,10 @@ class Mapper(object):
         )
 
     @staticmethod
-    def tag_model_to_db_dict(model: NewTagModel, names: NamingSettings) -> dict:
-        ret = {
+    def tag_model_to_db_dict(
+        model: NewTagModel, names: NamingSettings
+    ) -> dict[str, Any]:
+        ret: dict[str, Any] = {
             names.tag_name_col: model.name,
             names.tag_description_col: model.description,
             names.tag_category_col: model.category,
@@ -136,26 +143,63 @@ class Mapper(object):
     def db_row_to_ts_to_metric_model(
         d: Mapping, names: NamingSettings, max_abs: float | None
     ) -> TSToMetricModel:
-        if max_abs <= 0:
-            raise ValueError("max_abs must be a positive number")
-        value: float = d[names.ts_to_metric_value_col]
+        value: float = d[names.metric_values_value_col]
         if max_abs is not None:
+            if max_abs <= 0:
+                raise ValueError("max_abs must be a positive number")
             value = min(value, max_abs) if value > 0 else max(value, -max_abs)
 
         return TSToMetricModel(
-            ts_uid=d[names.ts_to_metric_ts_uid_col],
-            metric_uid=d[names.ts_to_metric_metric_uid_col],
+            ts_uids=d["ts_uids"],
+            metric_uid=d[names.metric_values_metric_uid_col],
             value=value,
-            data_json=d[names.ts_to_metric_data_json_col],
+            data_json=d[names.metric_values_data_json_col],
         )
 
     @staticmethod
-    def ts_to_metric_model_to_db_dict(
-        model: TSToMetricModel, names: NamingSettings
+    def db_row_to_ts_with_tags_and_data_model(d: Mapping) -> TSWithTagsAndDataModel:
+        if len(d["times"]) != len(d["values"]):
+            raise RuntimeError(
+                f"Times and values lengths mismatch: {len(d['times'])} and {len(d['values'])}"
+            )
+        return TSWithTagsAndDataModel(
+            uid=d["uid"],
+            tag_uids=d["tag_uids"],
+            data=[
+                NewTSDataModel(time=tup[0], value=tup[1])
+                for tup in zip(d["times"], d["values"])
+            ],
+        )
+
+    @staticmethod
+    def new_metric_value_model_to_db_dict(
+        model: NewMetricValueModel, names: NamingSettings
     ) -> dict:
         return {
-            names.ts_to_metric_ts_uid_col: model.ts_uid,
-            names.ts_to_metric_metric_uid_col: model.metric_uid,
-            names.ts_to_metric_value_col: model.value,
-            names.ts_to_metric_data_json_col: model.data_json,
+            names.metric_values_metric_uid_col: model.metric_uid,
+            names.metric_values_value_col: model.value,
+            names.metric_values_data_json_col: model.data_json,
         }
+
+    @staticmethod
+    def db_row_to_ts_with_values(d: Mapping) -> TSWithValues:
+        return TSWithValues(uid=d["ts_uid"], values=d["values"])
+
+    @staticmethod
+    def ts_with_values_model_to_db_dict(
+        model: TSWithValues, names: NamingSettings
+    ) -> dict:
+        return {
+            names.ts_visualization_vectors_ts_uid_col: model.uid,
+            names.ts_visualization_vectors_vector_col: model.values,
+        }
+
+    @staticmethod
+    def db_row_to_ts_with_visualization_vector(
+        d: Mapping, names: NamingSettings
+    ) -> TSWithVisualizationVectorModel:
+        metadata: TSMetadataModel = Mapper.db_row_to_metadata_model(d, names)
+        return TSWithVisualizationVectorModel(
+            metadata=metadata,
+            visualization_vector=d[names.ts_visualization_vectors_vector_col],
+        )
