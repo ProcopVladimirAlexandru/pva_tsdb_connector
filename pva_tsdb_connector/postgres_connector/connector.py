@@ -67,7 +67,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         try:
             self._engine: AsyncEngine = create_async_engine(
                 self._url,
-                echo=True,
+                echo=False,
                 echo_pool=False,
                 pool_size=self._config.connection.pool_min_size,
                 max_overflow=self._config.connection.pool_max_size
