@@ -767,21 +767,50 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         ts_uids: list[int] | None = None,
         order_asc: bool = True,
         start_date: datetime.datetime | None = None,
+        newest_n: int | None = None,
     ) -> list[TSDataModel]:
         table = await self.get_ts_table()
-        stmt = select(table)
+        order_by_column = table.columns[self._config.names.ts_time_col]
+        if newest_n is None:
+            stmt = select(table)
+        else:
+            stmt = select(
+                table,
+                func.row_number()
+                .over(
+                    partition_by=table.columns[self._config.names.ts_uid_col],
+                    order_by=order_by_column.desc(),
+                )
+                .label("pos"),
+            )
+
         if ts_uids is not None:
             if len(ts_uids) == 0:
                 return []
             stmt = stmt.where(table.c[self._config.names.ts_uid_col].in_(ts_uids))
+
         if start_date is not None:
             stmt = stmt.where(table.c[self._config.names.ts_time_col] >= start_date)
-        order_by_column = table.columns[self._config.names.ts_time_col]
-        if order_asc:
-            order_by_column_ordered = order_by_column.asc()
+
+        if newest_n is not None:
+            if newest_n == 0:
+                return []
+            subquery = stmt.alias("subquery")
+            stmt = select(subquery).where(subquery.columns["pos"] <= newest_n)
+            if order_asc:
+                stmt = stmt.order_by(
+                    subquery.columns[self._config.names.ts_time_col].asc()
+                )
+            else:
+                stmt = stmt.order_by(
+                    subquery.columns[self._config.names.ts_time_col].desc()
+                )
         else:
-            order_by_column_ordered = order_by_column.desc()
-        stmt = stmt.order_by(order_by_column_ordered)
+            if order_asc:
+                order_by_column_ordered = order_by_column.asc()
+            else:
+                order_by_column_ordered = order_by_column.desc()
+            stmt = stmt.order_by(order_by_column_ordered)
         results = (await conn.execute(stmt)).mappings().fetchall()
         return [
             Mapper.db_row_to_ts_data_model(row, names=self._config.names)
@@ -1145,12 +1174,14 @@ class AsyncPostgresSQLAlchemyCoreConnector:
                             ts_visualization_vectors_table.c[
                                 self._config.names.ts_visualization_vectors_vector_col
                             ]
-                        ).where(
+                        )
+                        .where(
                             ts_visualization_vectors_table.c[
                                 self._config.names.ts_visualization_vectors_ts_uid_col
                             ]
                             == origin_ts_uid
                         )
+                        .scalar_subquery()
                     )
                 )
                 <= radius
