@@ -3,13 +3,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "pva_tsdb_connector"
-version = "1.0.0"
+version = "2.0.0"
 authors = [
   { name="Procop Vladimir-Alexandru", email="vladiprocop@yahoo.com" },
 ]
 description = "A package to gather synchronous and asynchronous Python connectors to the Chartop DB."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "pydantic >= 2.11.4",
     "pydantic-settings >= 2.9.1",
