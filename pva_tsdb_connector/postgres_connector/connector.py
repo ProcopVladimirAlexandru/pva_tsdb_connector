@@ -677,7 +677,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
 
             await conn.execute(insert(operands_table).values(operands_rows))
 
-            inserted += len(result)
+            inserted += len(ts_to_metrics_models_page)
 
     async def delete_metric_values(
         self,
@@ -827,7 +827,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
         inserted: int = 0
         while inserted < len(models):
             models_page: list[TSDataModel] = models[inserted : inserted + page_size]
-            result = await conn.execute(
+            await conn.execute(
                 insert(table)
                 .values(
                     [
@@ -837,7 +837,7 @@ class AsyncPostgresSQLAlchemyCoreConnector:
                 )
                 .on_conflict_do_nothing(self._config.names.ts_pkey)
             )
-            inserted += result.rowcount
+            inserted += len(models_page)
 
     async def get_last_ts_times(
         self, conn: AsyncConnection, ts_uids: list[int]
@@ -1136,8 +1136,8 @@ class AsyncPostgresSQLAlchemyCoreConnector:
                     for m in models_page
                 ]
             )
-            result = await conn.execute(stmt)
-            inserted += result.rowcount
+            await conn.execute(stmt)
+            inserted += len(models_page)
 
     async def get_ts_with_visualization_vector(
         self,
